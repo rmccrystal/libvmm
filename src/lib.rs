@@ -1,5 +1,5 @@
 #![no_std]
-#![feature(llvm_asm)]
+#![feature(asm)]
 #![feature(global_asm)]
 
 #[cfg(target_arch = "x86_64")]

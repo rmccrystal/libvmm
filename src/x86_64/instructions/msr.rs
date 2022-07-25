@@ -1,3 +1,5 @@
+use core::arch::asm;
+
 #[derive(Copy, Clone)]
 pub enum MSR {
     IA32_APIC_BASE = 0x1b,
@@ -31,10 +33,15 @@ pub enum MSR {
 
 impl MSR {
     pub unsafe fn read(&self) -> u64 {
-        let low: u32;
-        let high: u32;
-
-        llvm_asm!("rdmsr" : "={eax}" (low), "={edx}" (high) : "{ecx}" (*self) : "memory" : "volatile");
+        let (high, low): (u32, u32);
+        unsafe {
+            asm!(
+            "rdmsr",
+            in("ecx") self,
+            out("eax") low, out("edx") high,
+            options(nomem, nostack, preserves_flags),
+            );
+        }
         ((high as u64) << 32) | (low as u64)
     }
 
@@ -42,6 +49,13 @@ impl MSR {
         let low = value as u32;
         let high = (value >> 32) as u32;
 
-        llvm_asm!("wrmsr" :: "{ecx}" (*self), "{eax}" (low), "{edx}" (high) : "memory" : "volatile" );
+        unsafe {
+            asm!(
+            "wrmsr",
+            in("ecx") self,
+            in("eax") low, in("edx") high,
+            options(nostack, preserves_flags),
+            );
+        }
     }
 }

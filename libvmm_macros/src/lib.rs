@@ -53,14 +53,14 @@ pub fn vmcs_access(args: TokenStream, input: TokenStream) -> TokenStream {
     let read_fn = quote! {
         pub fn read(&self) -> #vm_size {
             let mut value: u64;
-            unsafe { llvm_asm!("vmread $1, $0": "=r" (value): "r" (*self as u64)) };
+            unsafe { core::arch::asm!("vmread {0}, {1}", in(reg) (*self as u64), out(reg) value, options(att_syntax)); }
             value as #vm_size
         }
     };
 
     let write_fn = quote! {
         pub fn write(&self, value: #vm_size) {
-            unsafe { llvm_asm!("vmwrite $0, $1":: "r" (value as u64), "r" (*self as u64)) };
+            unsafe { core::arch::asm!("vmwrite {1}, {0}", in(reg) (*self as u64), in(reg) (value as u64), options(att_syntax)) };
         }
     };
 

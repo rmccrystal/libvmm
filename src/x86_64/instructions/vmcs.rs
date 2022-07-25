@@ -1,16 +1,17 @@
+use core::arch::{asm, global_asm};
 use crate::x86_64::instructions::msr::*;
 use crate::x86_64::structures::guest::VcpuGuestRegs;
 use crate::{AlignedAddress, SHIFT_4K};
 use bitflags::bitflags;
 use libvmm_macros::*;
 
-global_asm!(include_str!("vmx.s"));
+// global_asm!(include_str!("vmx.s"));
 
-extern "C" {
-    fn vmx_return() -> bool;
-    fn vmx_vmlaunch(guest_regs: &mut VcpuGuestRegs) -> bool;
-    fn vmx_vmresume(guest_regs: &mut VcpuGuestRegs) -> bool;
-}
+// extern "C" {
+//     fn vmx_return() -> bool;
+//     fn vmx_vmlaunch(guest_regs: &mut VcpuGuestRegs) -> bool;
+//     fn vmx_vmresume(guest_regs: &mut VcpuGuestRegs) -> bool;
+// }
 
 bitflags! {
     pub struct VMEntryControls: u32 {
@@ -366,143 +367,4 @@ pub enum VMCSControl {
     SecondaryProcBasedVmExec,
     VmExit,
     VmEntry,
-}
-
-pub struct VMCS {
-    launched: bool,
-    address: u64,
-}
-
-impl VMCS {
-    pub fn get() -> u64 {
-        /* @todo seems to cause a compiler crash! */
-        //let mut value: u64 = 0;
-        //asm!("vmptrst $0": "=m" (value));
-        //value
-        0
-    }
-
-    pub fn new(address: u64) -> Option<Self> {
-        if !address.aligned(SHIFT_4K) {
-            return None;
-        }
-
-        Some(VMCS {
-            launched: false,
-            address: address,
-        })
-    }
-
-    pub unsafe fn run(&mut self, regs: &mut VcpuGuestRegs) -> bool {
-        if self.launched {
-            vmx_vmresume(regs)
-        } else {
-            self.launched = vmx_vmlaunch(regs);
-            self.launched
-        }
-    }
-
-    pub fn load(&mut self) -> bool {
-        let error: bool;
-        /* @todo seems to cause a compiler crash */
-        //asm!("vmptrld $1; setna $0": "=qm" (error) : "m" (self.address));
-        unsafe { llvm_asm!("vmptrld $0":: "m" (self.address)) };
-
-        VMCSField64Host::RIP.write(vmx_return as u64);
-        true
-    }
-
-    pub fn clear(&mut self) -> bool {
-        unsafe { llvm_asm!("vmclear $0":: "m" (self.address)) };
-        self.launched = false;
-        true
-    }
-
-    pub fn skip_instruction() -> u32 {
-        let len = VMCSField32ReadOnly::VM_EXIT_INSTRUCTION_LEN.read();
-        let ip = VMCSField64Guest::RIP.read();
-
-        VMCSField64Guest::RIP.write(ip + len as u64);
-
-        len
-    }
-
-    pub fn exit_reason() -> u16 {
-        let reason = unsafe { VMCSField32ReadOnly::VM_EXIT_REASON.read() } as u16;
-        reason
-    }
-
-    // A.3, A.4, and A.5
-    pub fn adjust_controls(vmx_basic: u64, control: VMCSControl, value: u32) -> u32 {
-        let mut result = value;
-        let mut msr = if (vmx_basic & (1 << 55)) != 0 {
-            match control {
-                /*
-                 * If bit 55 in the IA32_VMX_BASIC MSR is read as 1,
-                 * all information about the allowed settings of the pin-based
-                 * VM-execution controls is contained in the
-                 * IA32_VMX_TRUE_PINBASED_CTLS MSR
-                 */
-                VMCSControl::PinBasedVmExec => MSR::IA32_VMX_TRUE_PINBASED_CTLS,
-                /*
-                 * If bit 55 in the IA32_VMX_BASIC MSR is read as 1,
-                 * the IA32_VMX_TRUE_PROCBASED_CTLS MSR (index 48EH)
-                 * reports on the allowed settings of all of the primary
-                 * processor-based VM-execution controls
-                 */
-                VMCSControl::PrimaryProcBasedVmExec => MSR::IA32_VMX_TRUE_PROCBASED_CTLS,
-                /*
-                 * The IA32_VMX_PROCBASED_CTLS2 MSR (index 48BH)
-                 * reports on the allowed settings of the secondary
-                 * processor-based VM-execution controls.
-                 */
-                VMCSControl::SecondaryProcBasedVmExec => MSR::IA32_VMX_PROCBASED_CTLS2,
-                VMCSControl::VmEntry => MSR::IA32_VMX_TRUE_ENTRY_CTLS,
-                VMCSControl::VmExit => MSR::IA32_VMX_TRUE_EXIT_CTLS,
-            }
-        } else {
-            match control {
-                /*
-                 * If bit 55 in the IA32_VMX_BASIC MSR is read as 0,
-                 * all information about the allowed settings of the pin-based
-                 * VM-execution controls is contained in the IA32_VMX_PINBASED_CTLS MSR
-                 */
-                VMCSControl::PinBasedVmExec => MSR::IA32_VMX_PINBASED_CTLS,
-                /*
-                 * If bit 55 in the IA32_VMX_BASIC MSR is read as 0,
-                 * the IA32_VMX_PROCBASED_CTLS MSR (index 482H)
-                 * reports on the allowed settings of all of the primary
-                 * processor-based VM-execution controls
-                 */
-                VMCSControl::PrimaryProcBasedVmExec => MSR::IA32_VMX_PROCBASED_CTLS,
-                /*
-                 * The IA32_VMX_PROCBASED_CTLS2 MSR (index 48BH)
-                 * reports on the allowed settings of the secondary
-                 * processor-based VM-execution controls.
-                 */
-                VMCSControl::SecondaryProcBasedVmExec => MSR::IA32_VMX_PROCBASED_CTLS2,
-                VMCSControl::VmEntry => MSR::IA32_VMX_ENTRY_CTLS,
-                VMCSControl::VmExit => MSR::IA32_VMX_EXIT_CTLS,
-            }
-        };
-        let msr_value = unsafe { msr.read() };
-
-        /*
-         * Bits 63:32 indicate the allowed 1-settings of these controls.
-         * VM entry allows control X to be 1 if bit 32+X in the MSR is
-         * set to 1; if bit 32+X in the MSR is cleared to 0, VM entry
-         * fails if control X is 1.
-         */
-        result &= (msr_value >> 32) as u32;
-
-        /*
-         * Bits 31:0 indicate the allowed 0-settings of these controls.
-         * VM entry allows control X to be 0 if bit X in the MSR
-         * is cleared to 0; if bit X in the MSR is set to 1,
-         * VM entry fails if control X is 0.
-         */
-        result |= msr_value as u32;
-
-        result
-    }
 }
